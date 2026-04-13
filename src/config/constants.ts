@@ -9,6 +9,8 @@ export const OVERPASS_URL = 'https://overpass-api.de/api/interpreter';
 
 export const FIRMS_MAP_KEY = import.meta.env.VITE_FIRMS_MAP_KEY || '';
 export const AISSTREAM_API_KEY = import.meta.env.VITE_AISSTREAM_API_KEY || '';
+export const ACLED_EMAIL = import.meta.env.VITE_ACLED_EMAIL || '';
+export const ACLED_PASSWORD = import.meta.env.VITE_ACLED_PASSWORD || '';
 
 export const AIRCRAFT_POLL_INTERVAL = 10_000;
 export const SATELLITE_UPDATE_INTERVAL = 5_000;

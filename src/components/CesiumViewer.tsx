@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import * as Cesium from 'cesium';
-import { GOOGLE_MAPS_API_KEY, AIRCRAFT_POLL_INTERVAL, SATELLITE_UPDATE_INTERVAL, FIRMS_MAP_KEY } from '../config/constants';
+import { GOOGLE_MAPS_API_KEY, AIRCRAFT_POLL_INTERVAL, SATELLITE_UPDATE_INTERVAL, FIRMS_MAP_KEY, ACLED_EMAIL, ACLED_PASSWORD } from '../config/constants';
 import { applyShader, removeShader } from '../shaders/ShaderManager';
 import { fetchAircraft, type AircraftState } from '../feeds/AircraftFeed';
 import { fetchSatellites, propagateAll, type SatelliteRecord, type SatellitePosition } from '../feeds/SatelliteFeed';
@@ -8,6 +8,7 @@ import { loadCameras, type Camera } from '../feeds/CCTVFeed';
 import { fetchRoads } from '../feeds/TrafficFlow';
 import { fetchEarthquakes, type Earthquake } from '../feeds/EarthquakeFeed';
 import { fetchFIRMS, type FireHotspot } from '../feeds/FIRMSFeed';
+import { fetchConflicts, type ConflictEvent } from '../feeds/ConflictFeed';
 import { createGIBSLayer } from '../layers/GIBSLayerManager';
 import { GIBS_LAYERS } from '../config/gibs-layers';
 import DetectionOverlay from './DetectionOverlay';
@@ -52,6 +53,7 @@ export default function CesiumViewer({ onReady, shaderMode, activeLayers, onView
   const gibsLayerRef = useRef<Cesium.ImageryLayer | null>(null);
   const gibsIndividualRef = useRef<Map<string, Cesium.ImageryLayer>>(new Map());
   const fireRef = useRef<Map<string, Cesium.Entity>>(new Map());
+  const conflictRef = useRef<Map<string, Cesium.Entity>>(new Map());
   const satDataRef = useRef<SatelliteRecord[]>([]);
 
   const [selectedAircraft, setSelectedAircraft] = useState<AircraftState | null>(null);
@@ -416,6 +418,79 @@ export default function CesiumViewer({ onReady, shaderMode, activeLayers, onView
       earthquakeRef.current.clear();
     };
   }, [activeLayers.earthquakes]);
+
+  // ======= CONFLICTS (ACLED) =======
+  useEffect(() => {
+    const v = viewerRef.current;
+    if (!v || !activeLayers.conflicts || !ACLED_EMAIL || !ACLED_PASSWORD) {
+      conflictRef.current.forEach(e => viewerRef.current?.entities.remove(e));
+      conflictRef.current.clear();
+      if (!activeLayers.conflicts) onFeedCountUpdate('conflicts', 0);
+      return;
+    }
+
+    let cancelled = false;
+
+    const load = async () => {
+      try {
+        const events = await fetchConflicts(ACLED_EMAIL, ACLED_PASSWORD);
+        if (cancelled) return;
+
+        for (const ev of events) {
+          if (isNaN(ev.latitude) || isNaN(ev.longitude)) continue;
+
+          const isBattle = ev.event_type.includes('Battle');
+          const isExplosion = ev.event_type.includes('Explosion') || ev.event_type.includes('Remote violence');
+          const isProtest = ev.event_type.includes('Protest');
+          const isRiot = ev.event_type.includes('Riot');
+
+          const color = isBattle || isExplosion ? Cesium.Color.RED
+            : isRiot ? Cesium.Color.ORANGE
+            : isProtest ? Cesium.Color.YELLOW
+            : Cesium.Color.fromCssColorString('#ff6666');
+
+          const size = Math.max(6, Math.min(16, 6 + ev.fatalities * 2));
+
+          const entity = v.entities.add({
+            position: Cesium.Cartesian3.fromDegrees(ev.longitude, ev.latitude, 0),
+            point: {
+              pixelSize: size,
+              color: Cesium.Color.fromAlpha(color, 0.8),
+              outlineColor: color,
+              outlineWidth: 2,
+            },
+            ellipse: {
+              semiMajorAxis: Math.max(5000, ev.fatalities * 3000),
+              semiMinorAxis: Math.max(5000, ev.fatalities * 3000),
+              material: Cesium.Color.fromAlpha(color, 0.15),
+              outline: true,
+              outlineColor: Cesium.Color.fromAlpha(color, 0.4),
+              height: 0,
+            },
+            label: {
+              text: `${isExplosion ? '💥' : isBattle ? '⚔' : isProtest ? '✊' : '⚠'} ${ev.event_type}`,
+              font: '9px Share Tech Mono',
+              fillColor: color,
+              pixelOffset: new Cesium.Cartesian2(size + 4, 0),
+              distanceDisplayCondition: new Cesium.DistanceDisplayCondition(0, 2_000_000),
+              style: Cesium.LabelStyle.FILL,
+            },
+            properties: { feedType: 'conflict', data: ev },
+          });
+          conflictRef.current.set(ev.id, entity);
+        }
+
+        onFeedCountUpdate('conflicts', events.length);
+      } catch (err) { console.error('Conflict error:', err); }
+    };
+
+    load();
+    return () => {
+      cancelled = true;
+      conflictRef.current.forEach(e => v.entities.remove(e));
+      conflictRef.current.clear();
+    };
+  }, [activeLayers.conflicts]);
 
   // ======= FIRMS FIRE/THERMAL =======
   useEffect(() => {
