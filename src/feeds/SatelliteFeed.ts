@@ -43,7 +43,7 @@ export async function fetchSatellites(): Promise<SatelliteRecord[]> {
 
   for (const group of GROUPS) {
     try {
-      const res = await fetch(`${CELESTRAK_API}?GROUP=${group.name}&FORMAT=tle`);
+      const res = await fetch(`/.netlify/functions/celestrak-proxy?group=${group.name}`);
       if (!res.ok) continue;
       const text = await res.text();
       const lines = text.trim().split('\n');
