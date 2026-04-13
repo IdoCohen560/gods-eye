@@ -89,23 +89,30 @@ export default function CesiumViewer({ onReady, shaderMode, activeLayers, onView
 
     viewer.clock.shouldAnimate = false;
 
-    // Google Photorealistic 3D Tiles
+    // Google Photorealistic 3D Tiles — renders ON TOP of the globe at city zoom
+    // Globe stays visible for roads/base map at all zoom levels
     if (GOOGLE_MAPS_API_KEY) {
       Cesium.Cesium3DTileset.fromUrl(
         `https://tile.googleapis.com/v1/3dtiles/root.json?key=${GOOGLE_MAPS_API_KEY}`,
         { showCreditsOnScreen: true, maximumScreenSpaceError: 8 }
       ).then(tileset => {
         viewer.scene.primitives.add(tileset);
-        viewer.scene.globe.show = false;
         google3dLoadedRef.current = true;
         console.log('✅ Google 3D Tiles loaded successfully');
       }).catch(e => {
         console.error('❌ Google 3D Tiles failed:', e);
-        viewer.scene.globe.show = true;
       });
     }
 
     viewer.scene.globe.enableLighting = true;
+
+    // Add OSM Buildings for 3D building geometry
+    Cesium.createOsmBuildingsAsync().then(buildings => {
+      viewer.scene.primitives.add(buildings);
+      console.log('✅ OSM Buildings loaded');
+    }).catch(e => {
+      console.warn('OSM Buildings unavailable:', e);
+    });
 
     viewer.camera.changed.addEventListener(() => {
       const c = viewer.camera.positionCartographic;
@@ -760,18 +767,7 @@ export default function CesiumViewer({ onReady, shaderMode, activeLayers, onView
     };
   }, [activeLayers.traffic]);
 
-  // ======= GIBS LAYERS (need globe visible to render) =======
-  const updateGlobeForGibs = (v: Cesium.Viewer) => {
-    const hasAnyGibs = gibsLayerRef.current !== null || gibsIndividualRef.current.size > 0;
-    if (hasAnyGibs) {
-      // Show globe so imagery layers can render on it
-      v.scene.globe.show = true;
-    } else if (google3dLoadedRef.current) {
-      // No GIBS active — hide globe if Google 3D tiles are loaded
-      v.scene.globe.show = false;
-    }
-  };
-
+  // ======= GIBS LAYERS =======
   useEffect(() => {
     const v = viewerRef.current;
     if (!v) return;
@@ -782,7 +778,6 @@ export default function CesiumViewer({ onReady, shaderMode, activeLayers, onView
       layer.alpha = 0.7;
       gibsLayerRef.current = layer;
     }
-    updateGlobeForGibs(v);
   }, [activeLayers.gibs]);
 
   useEffect(() => {
@@ -802,7 +797,6 @@ export default function CesiumViewer({ onReady, shaderMode, activeLayers, onView
         gibsIndividualRef.current.delete(cfg.id);
       }
     }
-    updateGlobeForGibs(v);
   }, [activeLayers.gibs_viirs_nightlights, activeLayers.gibs_firms_fire, activeLayers.gibs_aerosol, activeLayers.gibs_sst]);
 
   // ======= DETECTION OVERLAY DATA =======
