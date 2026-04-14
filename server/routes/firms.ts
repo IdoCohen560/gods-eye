@@ -6,7 +6,7 @@ export const firmsRouter = Router();
 const CACHE_TTL = 300_000; // 5 minutes
 
 firmsRouter.get('/', async (req, res) => {
-  const mapKey = process.env.FIRMS_MAP_KEY;
+  const mapKey = process.env.FIRMS_MAP_KEY || process.env.VITE_FIRMS_MAP_KEY;
   if (!mapKey) {
     return res.status(400).json({ error: 'FIRMS MAP_KEY not configured' });
   }

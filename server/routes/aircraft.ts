@@ -24,9 +24,11 @@ aircraftRouter.get('/', async (req, res) => {
     const url = `${OPENSKY_URL}?${params}`;
 
     const headers: Record<string, string> = {};
-    if (process.env.OPENSKY_USERNAME && process.env.OPENSKY_PASSWORD) {
+    const username = process.env.OPENSKY_USERNAME || process.env.VITE_OPENSKY_USERNAME;
+    const password = process.env.OPENSKY_PASSWORD || process.env.VITE_OPENSKY_PASSWORD;
+    if (username && password) {
       headers['Authorization'] = 'Basic ' +
-        Buffer.from(`${process.env.OPENSKY_USERNAME}:${process.env.OPENSKY_PASSWORD}`).toString('base64');
+        Buffer.from(`${username}:${password}`).toString('base64');
     }
 
     const upstream = await fetch(url, { headers });

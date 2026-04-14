@@ -1,3 +1,13 @@
+import 'dotenv/config';
+
+// Map VITE_ prefixed env vars to non-prefixed for server use
+// (user's .env likely has VITE_ versions since they were set for the Vite frontend)
+for (const key of Object.keys(process.env)) {
+  if (key.startsWith('VITE_') && !process.env[key.slice(5)]) {
+    process.env[key.slice(5)] = process.env[key];
+  }
+}
+
 import express from 'express';
 import cors from 'cors';
 import { aircraftRouter } from './routes/aircraft';
