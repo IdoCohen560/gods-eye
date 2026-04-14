@@ -5,23 +5,35 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:server": "tsx watch server/index.ts",
+    "dev:full": "concurrently \"npm run dev\" \"npm run dev:server\"",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "server": "tsx server/index.ts"
   },
   "dependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/ws": "^8.18.1",
     "cesium": "^1.125.0",
+    "concurrently": "^9.2.1",
+    "cors": "^2.8.6",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "resium": "^1.18.2",
-    "satellite.js": "^5.0.0"
+    "satellite.js": "^5.0.0",
+    "tsx": "^4.21.0",
+    "ws": "^8.20.0"
   },
   "devDependencies": {
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
     "typescript": "~5.6.2",
     "vite": "^6.0.0",
-    "vite-plugin-cesium": "^1.2.23",
-    "@vitejs/plugin-react": "^4.3.4"
+    "vite-plugin-cesium": "^1.2.23"
   }
 }

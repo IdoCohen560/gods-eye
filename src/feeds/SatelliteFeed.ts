@@ -7,7 +7,7 @@ import {
   degreesLong,
 } from 'satellite.js';
 import type { SatRec } from 'satellite.js';
-import { CELESTRAK_API } from '../config/constants';
+import { CELESTRAK_API_BASE } from '../config/constants';
 
 export interface SatelliteRecord {
   name: string;
@@ -43,7 +43,7 @@ export async function fetchSatellites(): Promise<SatelliteRecord[]> {
 
   for (const group of GROUPS) {
     try {
-      const res = await fetch(`/.netlify/functions/celestrak-proxy?group=${group.name}`);
+      const res = await fetch(`${CELESTRAK_API_BASE}?group=${group.name}`);
       if (!res.ok) continue;
       const text = await res.text();
       const lines = text.trim().split('\n');

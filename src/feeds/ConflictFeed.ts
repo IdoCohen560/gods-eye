@@ -1,3 +1,5 @@
+import { CONFLICTS_API } from '../config/constants';
+
 export interface ConflictEvent {
   id: string;
   event_type: string;
@@ -59,7 +61,7 @@ function inferLocation(title: string, country: string): { lat: number; lon: numb
 
 export async function fetchConflicts(): Promise<ConflictEvent[]> {
   try {
-    const res = await fetch('/.netlify/functions/acled-proxy');
+    const res = await fetch(CONFLICTS_API);
     if (!res.ok) {
       console.warn(`GDELT proxy returned ${res.status}`);
       return [];

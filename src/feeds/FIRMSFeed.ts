@@ -1,3 +1,5 @@
+import { FIRMS_API } from '../config/constants';
+
 export interface FireHotspot {
   latitude: number;
   longitude: number;
@@ -17,7 +19,7 @@ export async function fetchFIRMS(bounds?: {
       ? `${bounds.west},${bounds.south},${bounds.east},${bounds.north}`
       : 'world';
 
-    const res = await fetch(`/.netlify/functions/firms-proxy?coords=${coords}`);
+    const res = await fetch(`${FIRMS_API}?coords=${coords}`);
     if (!res.ok) return [];
     const text = await res.text();
     const lines = text.trim().split('\n');

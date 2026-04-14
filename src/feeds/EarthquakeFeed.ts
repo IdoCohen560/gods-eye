@@ -1,3 +1,5 @@
+import { USGS_API } from '../config/constants';
+
 export interface Earthquake {
   id: string;
   magnitude: number;
@@ -10,7 +12,7 @@ export interface Earthquake {
 }
 
 export async function fetchEarthquakes(): Promise<Earthquake[]> {
-  const res = await fetch('/.netlify/functions/usgs-proxy');
+  const res = await fetch(USGS_API);
   if (!res.ok) throw new Error(`USGS API error: ${res.status}`);
   const data = await res.json();
 

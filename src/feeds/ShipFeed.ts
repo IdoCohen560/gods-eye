@@ -1,4 +1,4 @@
-import { AISSTREAM_API_KEY } from '../config/constants';
+import { AISSTREAM_API_KEY, SHIPS_API, IS_EXPRESS_BACKEND } from '../config/constants';
 
 export interface Ship {
   mmsi: string;
@@ -34,13 +34,40 @@ type ShipCallback = (ships: Map<string, Ship>) => void;
 let ws: WebSocket | null = null;
 let shipMap = new Map<string, Ship>();
 
+/**
+ * Express backend mode: poll /api/ships every 10s (server handles WebSocket)
+ * Netlify mode: direct WebSocket from browser to AISStream
+ */
 export function connectShipFeed(
   bounds: { south: number; west: number; north: number; east: number },
   onUpdate: ShipCallback,
 ): () => void {
+  // Express backend mode — server manages AIS WebSocket, we just poll HTTP
+  if (IS_EXPRESS_BACKEND) {
+    let cancelled = false;
+    const poll = async () => {
+      if (cancelled) return;
+      try {
+        const res = await fetch(SHIPS_API);
+        if (!res.ok) return;
+        const data = await res.json();
+        const map = new Map<string, Ship>();
+        for (const ship of data.ships || []) {
+          map.set(ship.mmsi, ship);
+        }
+        if (map.size > 0) onUpdate(map);
+      } catch (e) {
+        console.error('Ship poll error:', e);
+      }
+    };
+    poll();
+    const interval = setInterval(poll, 10_000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }
+
+  // Direct WebSocket mode (Netlify / no backend)
   if (!AISSTREAM_API_KEY) return () => {};
 
-  // Close existing
   if (ws) { ws.close(); ws = null; }
   shipMap = new Map();
 
@@ -78,7 +105,6 @@ export function connectShipFeed(
           shipMap.set(ship.mmsi, ship);
         }
 
-        // Throttle UI updates — only push every 50 messages
         if (shipMap.size % 50 === 0 || shipMap.size < 10) {
           onUpdate(new Map(shipMap));
         }
@@ -89,7 +115,6 @@ export function connectShipFeed(
   ws.onerror = (err) => console.error('AISStream error:', err);
   ws.onclose = () => { ws = null; };
 
-  // Periodic flush
   const flushInterval = setInterval(() => {
     if (shipMap.size > 0) onUpdate(new Map(shipMap));
   }, 5000);
