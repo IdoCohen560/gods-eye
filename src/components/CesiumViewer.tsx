@@ -1,18 +1,21 @@
 import { useEffect, useRef, useState } from 'react';
 import * as Cesium from 'cesium';
-import { GOOGLE_MAPS_API_KEY, AIRCRAFT_POLL_INTERVAL, SATELLITE_UPDATE_INTERVAL } from '../config/constants';
+import { GOOGLE_MAPS_API_KEY } from '../config/constants';
 import { applyShader, removeShader } from '../shaders/ShaderManager';
-import { fetchAircraft, type AircraftState } from '../feeds/AircraftFeed';
-import { fetchSatellites, propagateAll, type SatelliteRecord, type SatellitePosition } from '../feeds/SatelliteFeed';
-import { loadCameras, type Camera } from '../feeds/CCTVFeed';
-import { fetchRoads } from '../feeds/TrafficFlow';
-import { connectShipFeed, getShipColor, type Ship } from '../feeds/ShipFeed';
-import { fetchEarthquakes, type Earthquake } from '../feeds/EarthquakeFeed';
-import { fetchFIRMS, type FireHotspot } from '../feeds/FIRMSFeed';
-import { fetchConflicts, type ConflictEvent } from '../feeds/ConflictFeed';
 import { createGIBSLayer } from '../layers/GIBSLayerManager';
 import { GIBS_LAYERS } from '../config/gibs-layers';
+import { useAircraftFeed } from '../hooks/useAircraftFeed';
+import { useSatelliteFeed } from '../hooks/useSatelliteFeed';
+import { useCCTVFeed } from '../hooks/useCCTVFeed';
+import { useEarthquakeFeed } from '../hooks/useEarthquakeFeed';
+import { useShipFeed } from '../hooks/useShipFeed';
+import { useConflictFeed } from '../hooks/useConflictFeed';
+import { useFireFeed } from '../hooks/useFireFeed';
+import { useTrafficFeed } from '../hooks/useTrafficFeed';
+import { reportFeedStatus, reportToast } from '../hooks/useFeedStatus';
 import DetectionOverlay from './DetectionOverlay';
+import type { Camera } from '../feeds/CCTVFeed';
+import type { AircraftState } from '../feeds/AircraftFeed';
 import type { ShaderMode, ViewState, FeedCounts } from '../App';
 
 interface Props {
@@ -23,117 +26,107 @@ interface Props {
   onFeedCountUpdate: (key: keyof FeedCounts, count: number) => void;
 }
 
-// Satellite category colors
-const SAT_COLORS: Record<string, Cesium.Color> = {
-  station: Cesium.Color.WHITE,
-  gps: Cesium.Color.DODGERBLUE,
-  weather: Cesium.Color.YELLOW,
-  military: Cesium.Color.RED,
-  starlink: Cesium.Color.fromCssColorString('#33ff33'),
-  visual: Cesium.Color.CYAN,
-  other: Cesium.Color.CYAN,
-};
-
-const SAT_SIZES: Record<string, number> = {
-  station: 12, gps: 6, weather: 6, military: 8, starlink: 3, visual: 6, other: 5,
-};
-
 export default function CesiumViewer({ onReady, shaderMode, activeLayers, onViewStateChange, onFeedCountUpdate }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewerRef = useRef<Cesium.Viewer | null>(null);
   const prevShaderRef = useRef<ShaderMode>('normal');
-
-  // Entity refs
-  const aircraftRef = useRef<Map<string, Cesium.Entity>>(new Map());
-  const satelliteRef = useRef<Map<string, Cesium.Entity>>(new Map());
-  const orbitRef = useRef<Map<string, Cesium.Entity>>(new Map());
-  const cameraRef = useRef<Map<string, Cesium.Entity>>(new Map());
-  const earthquakeRef = useRef<Map<string, Cesium.Entity>>(new Map());
-  const trafficPrimRef = useRef<Cesium.PointPrimitiveCollection | null>(null);
-  const trafficAnimRef = useRef<number>(0);
   const gibsLayerRef = useRef<Cesium.ImageryLayer | null>(null);
   const gibsIndividualRef = useRef<Map<string, Cesium.ImageryLayer>>(new Map());
-  const google3dLoadedRef = useRef(false);
-  const fireRef = useRef<Map<string, Cesium.Entity>>(new Map());
-  const conflictRef = useRef<Map<string, Cesium.Entity>>(new Map());
-  const shipRef = useRef<Map<string, Cesium.Entity>>(new Map());
-  const satDataRef = useRef<SatelliteRecord[]>([]);
 
+  const [viewer, setViewer] = useState<Cesium.Viewer | null>(null);
   const [selectedAircraft, setSelectedAircraft] = useState<AircraftState | null>(null);
   const [selectedCamera, setSelectedCamera] = useState<Camera | null>(null);
   const [detectionEntities, setDetectionEntities] = useState<any[]>([]);
+
+  // ======= FEED HOOKS =======
+  const { aircraftEntities } = useAircraftFeed({
+    viewer, active: activeLayers.aircraft,
+    onCountUpdate: (c) => onFeedCountUpdate('aircraft', c),
+  });
+  const { satelliteEntities } = useSatelliteFeed({
+    viewer, active: activeLayers.satellites,
+    onCountUpdate: (c) => onFeedCountUpdate('satellites', c),
+  });
+  const { cameraEntities } = useCCTVFeed({
+    viewer, active: activeLayers.cctv,
+    onCountUpdate: (c) => onFeedCountUpdate('cameras', c),
+  });
+  const { earthquakeEntities } = useEarthquakeFeed({
+    viewer, active: activeLayers.earthquakes,
+    onCountUpdate: (c) => onFeedCountUpdate('earthquakes', c),
+  });
+  const { shipEntities } = useShipFeed({
+    viewer, active: activeLayers.ships,
+    onCountUpdate: (c) => onFeedCountUpdate('ships', c),
+  });
+  const { conflictEntities } = useConflictFeed({
+    viewer, active: activeLayers.conflicts,
+    onCountUpdate: (c) => onFeedCountUpdate('conflicts', c),
+  });
+  const { fireEntities } = useFireFeed({
+    viewer, active: activeLayers.fires,
+    onCountUpdate: (c) => onFeedCountUpdate('fires', c),
+  });
+  useTrafficFeed({
+    viewer, active: activeLayers.traffic,
+    onCountUpdate: () => {},
+  });
 
   // ======= INIT VIEWER =======
   useEffect(() => {
     if (!containerRef.current || viewerRef.current) return;
 
-    const viewer = new Cesium.Viewer(containerRef.current, {
-      timeline: false,
-      animation: false,
-      baseLayerPicker: false,
-      geocoder: false,
-      homeButton: false,
-      navigationHelpButton: false,
-      sceneModePicker: false,
-      fullscreenButton: false,
-      selectionIndicator: true,
-      infoBox: false,
-      requestRenderMode: true,
-      maximumRenderTimeChange: Infinity,
+    const v = new Cesium.Viewer(containerRef.current, {
+      timeline: false, animation: false, baseLayerPicker: false,
+      geocoder: false, homeButton: false, navigationHelpButton: false,
+      sceneModePicker: false, fullscreenButton: false,
+      selectionIndicator: true, infoBox: false,
+      requestRenderMode: true, maximumRenderTimeChange: Infinity,
     });
 
-    // Try to add world terrain, but don't crash if Ion token is bad
     Cesium.CesiumTerrainProvider.fromIonAssetId(1).then(terrain => {
-      viewer.scene.terrainProvider = terrain;
-    }).catch(e => {
-      console.warn('Cesium Ion terrain unavailable (token may be invalid):', e);
-    });
+      v.scene.terrainProvider = terrain;
+    }).catch(e => console.warn('Cesium Ion terrain unavailable:', e));
 
-    viewer.clock.shouldAnimate = false;
+    v.clock.shouldAnimate = false;
 
-    // Google Photorealistic 3D Tiles — renders ON TOP of the globe at city zoom
-    // Globe stays visible for roads/base map at all zoom levels
     if (GOOGLE_MAPS_API_KEY) {
       Cesium.Cesium3DTileset.fromUrl(
         `https://tile.googleapis.com/v1/3dtiles/root.json?key=${GOOGLE_MAPS_API_KEY}`,
         { showCreditsOnScreen: true, maximumScreenSpaceError: 16 }
       ).then(tileset => {
-        viewer.scene.primitives.add(tileset);
-        google3dLoadedRef.current = true;
-        console.log('✅ Google 3D Tiles loaded successfully');
+        v.scene.primitives.add(tileset);
+        reportFeedStatus('google3d', 'online');
       }).catch(e => {
-        console.error('❌ Google 3D Tiles failed:', e);
+        console.error('Google 3D Tiles failed:', e);
+        reportToast('Google 3D Tiles failed to load', 'warning', 'google3d');
       });
     }
 
-    viewer.scene.globe.enableLighting = true;
+    v.scene.globe.enableLighting = true;
 
-    // Add OSM Buildings (no outlines to avoid imagery draping conflict)
     Cesium.createOsmBuildingsAsync().then(buildings => {
       buildings.showOutline = false;
-      viewer.scene.primitives.add(buildings);
-      console.log('✅ OSM Buildings loaded');
-    }).catch(e => {
-      console.warn('OSM Buildings unavailable:', e);
-    });
+      v.scene.primitives.add(buildings);
+    }).catch(e => console.warn('OSM Buildings unavailable:', e));
 
-    viewer.camera.changed.addEventListener(() => {
-      const c = viewer.camera.positionCartographic;
+    v.camera.changed.addEventListener(() => {
+      const c = v.camera.positionCartographic;
       onViewStateChange({
         lat: Cesium.Math.toDegrees(c.latitude),
         lon: Cesium.Math.toDegrees(c.longitude),
         alt: c.height,
-        heading: Cesium.Math.toDegrees(viewer.camera.heading),
+        heading: Cesium.Math.toDegrees(v.camera.heading),
       });
     });
 
-    const handler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
+    const handler = new Cesium.ScreenSpaceEventHandler(v.scene.canvas);
     handler.setInputAction((click: { position: Cesium.Cartesian2 }) => {
-      const picked = viewer.scene.pick(click.position);
+      const picked = v.scene.pick(click.position);
       if (Cesium.defined(picked) && picked.id) {
         const entity = picked.id as Cesium.Entity;
         const props = entity.properties;
-        const t = viewer.clock.currentTime;
+        const t = v.clock.currentTime;
         if (props?.feedType?.getValue(t) === 'aircraft') {
           setSelectedAircraft(props.data?.getValue(t));
           setSelectedCamera(null);
@@ -147,46 +140,33 @@ export default function CesiumViewer({ onReady, shaderMode, activeLayers, onView
       }
     }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
 
-    // Keyboard controls: WASD pan, +/- zoom
     const handleKeyControls = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement) return;
-      const camera = viewer.camera;
+      const camera = v.camera;
       const alt = camera.positionCartographic.height;
       const lat = Cesium.Math.toDegrees(camera.positionCartographic.latitude);
       const lon = Cesium.Math.toDegrees(camera.positionCartographic.longitude);
-      // Pan amount scales with altitude (bigger moves when zoomed out)
-      const panDeg = alt / 1_000_000; // roughly 1° per 1000km altitude
+      const panDeg = alt / 1_000_000;
 
       switch (e.key) {
-        case '=': case '+':
-          camera.zoomIn(alt * 0.3);
-          break;
-        case '-': case '_':
-          camera.zoomOut(alt * 0.3);
-          break;
-        case 'w': case 'W':
-          camera.flyTo({ destination: Cesium.Cartesian3.fromDegrees(lon, Math.min(89, lat + panDeg), alt), duration: 0.3 });
-          break;
-        case 's': case 'S':
-          camera.flyTo({ destination: Cesium.Cartesian3.fromDegrees(lon, Math.max(-89, lat - panDeg), alt), duration: 0.3 });
-          break;
-        case 'a': case 'A':
-          camera.flyTo({ destination: Cesium.Cartesian3.fromDegrees(lon - panDeg, lat, alt), duration: 0.3 });
-          break;
-        case 'd': case 'D':
-          camera.flyTo({ destination: Cesium.Cartesian3.fromDegrees(lon + panDeg, lat, alt), duration: 0.3 });
-          break;
+        case '=': case '+': camera.zoomIn(alt * 0.3); break;
+        case '-': case '_': camera.zoomOut(alt * 0.3); break;
+        case 'w': case 'W': camera.flyTo({ destination: Cesium.Cartesian3.fromDegrees(lon, Math.min(89, lat + panDeg), alt), duration: 0.3 }); break;
+        case 's': case 'S': camera.flyTo({ destination: Cesium.Cartesian3.fromDegrees(lon, Math.max(-89, lat - panDeg), alt), duration: 0.3 }); break;
+        case 'a': case 'A': camera.flyTo({ destination: Cesium.Cartesian3.fromDegrees(lon - panDeg, lat, alt), duration: 0.3 }); break;
+        case 'd': case 'D': camera.flyTo({ destination: Cesium.Cartesian3.fromDegrees(lon + panDeg, lat, alt), duration: 0.3 }); break;
       }
     };
     window.addEventListener('keydown', handleKeyControls);
 
-    viewerRef.current = viewer;
-    onReady(viewer);
+    viewerRef.current = v;
+    setViewer(v);
+    onReady(v);
 
     return () => {
       window.removeEventListener('keydown', handleKeyControls);
       handler.destroy();
-      viewer.destroy();
+      v.destroy();
       viewerRef.current = null;
     };
   }, []);
@@ -199,579 +179,6 @@ export default function CesiumViewer({ onReady, shaderMode, activeLayers, onView
     applyShader(v, shaderMode);
     prevShaderRef.current = shaderMode;
   }, [shaderMode]);
-
-  // ======= AIRCRAFT =======
-  useEffect(() => {
-    const v = viewerRef.current;
-    if (!v || !activeLayers.aircraft) {
-      aircraftRef.current.forEach(e => viewerRef.current?.entities.remove(e));
-      aircraftRef.current.clear();
-      if (!activeLayers.aircraft) onFeedCountUpdate('aircraft', 0);
-      return;
-    }
-
-    let cancelled = false;
-    const poll = async () => {
-      if (cancelled) return;
-      try {
-        const rect = v.camera.computeViewRectangle();
-        if (!rect) return;
-        const bounds = {
-          lamin: Math.max(-90, Cesium.Math.toDegrees(rect.south)),
-          lomin: Math.max(-180, Cesium.Math.toDegrees(rect.west)),
-          lamax: Math.min(90, Cesium.Math.toDegrees(rect.north)),
-          lomax: Math.min(180, Cesium.Math.toDegrees(rect.east)),
-        };
-        // Skip if viewing entire globe (waste of API credits)
-        if (bounds.lamax - bounds.lamin > 90) return;
-
-        const aircraft = await fetchAircraft(bounds);
-        if (cancelled) return;
-        const ids = new Set<string>();
-
-        for (const ac of aircraft) {
-          if (ac.longitude === null || ac.latitude === null) continue;
-          ids.add(ac.icao24);
-          const pos = Cesium.Cartesian3.fromDegrees(ac.longitude, ac.latitude, ac.baro_altitude || 0);
-          const existing = aircraftRef.current.get(ac.icao24);
-
-          if (existing) {
-            existing.position = new Cesium.ConstantPositionProperty(pos);
-            if (existing.billboard) {
-              existing.billboard.rotation = new Cesium.ConstantProperty(-Cesium.Math.toRadians(ac.true_track || 0));
-            }
-          } else {
-            const alt = ac.baro_altitude || 0;
-            const color = alt < 3000 ? Cesium.Color.LIME : alt < 10000 ? Cesium.Color.YELLOW : Cesium.Color.RED;
-            const entity = v.entities.add({
-              position: pos,
-              billboard: {
-                image: createAircraftIcon(color),
-                width: 16, height: 16,
-                rotation: -Cesium.Math.toRadians(ac.true_track || 0),
-                alignedAxis: Cesium.Cartesian3.UNIT_Z,
-              },
-              label: {
-                text: ac.callsign?.trim() || ac.icao24,
-                font: '10px Share Tech Mono',
-                fillColor: Cesium.Color.fromAlpha(Cesium.Color.WHITE, 0.8),
-                pixelOffset: new Cesium.Cartesian2(0, -14),
-                distanceDisplayCondition: new Cesium.DistanceDisplayCondition(0, 500_000),
-                style: Cesium.LabelStyle.FILL,
-              },
-              properties: { feedType: 'aircraft', data: ac },
-            });
-            aircraftRef.current.set(ac.icao24, entity);
-          }
-        }
-
-        for (const [id, e] of aircraftRef.current) {
-          if (!ids.has(id)) { v.entities.remove(e); aircraftRef.current.delete(id); }
-        }
-        onFeedCountUpdate('aircraft', ids.size);
-      } catch (err) { console.error('Aircraft error:', err); }
-    };
-
-    poll();
-    const interval = setInterval(poll, AIRCRAFT_POLL_INTERVAL);
-    return () => { cancelled = true; clearInterval(interval); };
-  }, [activeLayers.aircraft]);
-
-  // ======= SATELLITES (with orbit lines) =======
-  useEffect(() => {
-    const v = viewerRef.current;
-
-    // Always clean up first
-    const cleanup = () => {
-      const viewer = viewerRef.current;
-      if (viewer && !viewer.isDestroyed()) {
-        satelliteRef.current.forEach(e => { try { viewer.entities.remove(e); } catch {} });
-        orbitRef.current.forEach(e => { try { viewer.entities.remove(e); } catch {} });
-      }
-      satelliteRef.current.clear();
-      orbitRef.current.clear();
-    };
-
-    cleanup();
-
-    if (!v || !activeLayers.satellites) {
-      onFeedCountUpdate('satellites', 0);
-      return;
-    }
-
-    let cancelled = false;
-
-    const init = async () => {
-      try {
-        const sats = await fetchSatellites();
-        if (cancelled) return;
-        satDataRef.current = sats;
-
-        const positions = propagateAll(sats, new Date());
-        let count = 0;
-
-        for (const sat of positions) {
-          if (cancelled) break;
-          if (!sat.position) continue;
-          count++;
-          const color = SAT_COLORS[sat.category] || Cesium.Color.CYAN;
-          const size = SAT_SIZES[sat.category] || 5;
-          const pos = Cesium.Cartesian3.fromDegrees(
-            sat.position.longitude, sat.position.latitude, sat.position.altitude * 1000
-          );
-
-          const entity = v.entities.add({
-            position: pos,
-            point: {
-              pixelSize: size,
-              color: color,
-              outlineColor: Cesium.Color.WHITE,
-              outlineWidth: sat.category === 'station' ? 2 : 1,
-              distanceDisplayCondition: new Cesium.DistanceDisplayCondition(
-                0, sat.category === 'starlink' ? 5_000_000 : 30_000_000
-              ),
-            },
-            label: {
-              text: sat.name,
-              font: `${sat.category === 'station' ? 11 : 9}px Share Tech Mono`,
-              fillColor: color,
-              pixelOffset: new Cesium.Cartesian2(size + 4, 0),
-              distanceDisplayCondition: new Cesium.DistanceDisplayCondition(
-                0, sat.category === 'starlink' ? 2_000_000 : 10_000_000
-              ),
-              style: Cesium.LabelStyle.FILL,
-            },
-            properties: { feedType: 'satellite', data: sat },
-          });
-          satelliteRef.current.set(sat.name, entity);
-
-          // Orbit path (skip starlink)
-          if (sat.orbitPath.length > 2) {
-            const pathPositions = sat.orbitPath.map(p =>
-              Cesium.Cartesian3.fromDegrees(p.longitude, p.latitude, p.altitude * 1000)
-            );
-            const orbitEntity = v.entities.add({
-              polyline: {
-                positions: pathPositions,
-                width: sat.category === 'station' ? 2 : 1,
-                material: new Cesium.PolylineDashMaterialProperty({
-                  color: Cesium.Color.fromAlpha(color, 0.4),
-                  dashLength: 16,
-                }),
-                distanceDisplayCondition: new Cesium.DistanceDisplayCondition(0, 30_000_000),
-              },
-            });
-            orbitRef.current.set(sat.name, orbitEntity);
-          }
-        }
-
-        onFeedCountUpdate('satellites', count);
-      } catch (err) { console.error('Satellite error:', err); }
-    };
-
-    init();
-
-    const interval = setInterval(() => {
-      if (cancelled) return;
-      const positions = propagateAll(satDataRef.current, new Date());
-      for (const sat of positions) {
-        if (!sat.position) continue;
-        const entity = satelliteRef.current.get(sat.name);
-        if (entity) {
-          entity.position = new Cesium.ConstantPositionProperty(
-            Cesium.Cartesian3.fromDegrees(sat.position.longitude, sat.position.latitude, sat.position.altitude * 1000)
-          );
-        }
-      }
-    }, SATELLITE_UPDATE_INTERVAL);
-
-    return () => {
-      cancelled = true;
-      clearInterval(interval);
-      cleanup();
-    };
-  }, [activeLayers.satellites]);
-
-  // ======= CCTV =======
-  useEffect(() => {
-    const v = viewerRef.current;
-    if (!v || !activeLayers.cctv) {
-      cameraRef.current.forEach(e => viewerRef.current?.entities.remove(e));
-      cameraRef.current.clear();
-      if (!activeLayers.cctv) onFeedCountUpdate('cameras', 0);
-      return;
-    }
-
-    const cameras = loadCameras();
-    for (const cam of cameras) {
-      const entity = v.entities.add({
-        position: Cesium.Cartesian3.fromDegrees(cam.lon, cam.lat, 50),
-        billboard: {
-          image: createCameraIcon(), width: 20, height: 20,
-          distanceDisplayCondition: new Cesium.DistanceDisplayCondition(0, 200_000),
-        },
-        label: {
-          text: cam.name, font: '9px Share Tech Mono',
-          fillColor: Cesium.Color.ORANGE,
-          pixelOffset: new Cesium.Cartesian2(0, -16),
-          distanceDisplayCondition: new Cesium.DistanceDisplayCondition(0, 50_000),
-          style: Cesium.LabelStyle.FILL,
-        },
-        properties: { feedType: 'camera', data: cam },
-      });
-      cameraRef.current.set(cam.id, entity);
-    }
-    onFeedCountUpdate('cameras', cameras.length);
-
-    return () => { cameraRef.current.forEach(e => v.entities.remove(e)); cameraRef.current.clear(); };
-  }, [activeLayers.cctv]);
-
-  // ======= EARTHQUAKES (USGS) =======
-  useEffect(() => {
-    const v = viewerRef.current;
-    if (!v || !activeLayers.earthquakes) {
-      earthquakeRef.current.forEach(e => viewerRef.current?.entities.remove(e));
-      earthquakeRef.current.clear();
-      if (!activeLayers.earthquakes) onFeedCountUpdate('earthquakes', 0);
-      return;
-    }
-
-    let cancelled = false;
-
-    const load = async () => {
-      try {
-        const quakes = await fetchEarthquakes();
-        if (cancelled) return;
-
-        for (const q of quakes) {
-          const color = q.magnitude < 4 ? Cesium.Color.YELLOW
-            : q.magnitude < 6 ? Cesium.Color.ORANGE : Cesium.Color.RED;
-          const size = Math.max(8, q.magnitude * 5);
-
-          const entity = v.entities.add({
-            position: Cesium.Cartesian3.fromDegrees(q.longitude, q.latitude, 0),
-            ellipse: {
-              semiMajorAxis: q.magnitude * 15000,
-              semiMinorAxis: q.magnitude * 15000,
-              material: Cesium.Color.fromAlpha(color, 0.3),
-              outline: true,
-              outlineColor: color,
-              outlineWidth: 2,
-              height: 0,
-            },
-            point: {
-              pixelSize: size,
-              color: color,
-              outlineColor: Cesium.Color.WHITE,
-              outlineWidth: 1,
-            },
-            label: {
-              text: `M${q.magnitude.toFixed(1)} ${q.place}`,
-              font: '10px Share Tech Mono',
-              fillColor: color,
-              pixelOffset: new Cesium.Cartesian2(size + 4, 0),
-              distanceDisplayCondition: new Cesium.DistanceDisplayCondition(0, 5_000_000),
-              style: Cesium.LabelStyle.FILL,
-            },
-            properties: { feedType: 'earthquake', data: q },
-          });
-          earthquakeRef.current.set(q.id, entity);
-        }
-
-        onFeedCountUpdate('earthquakes', quakes.length);
-      } catch (err) { console.error('Earthquake error:', err); }
-    };
-
-    load();
-    // Refresh every 5 minutes
-    const interval = setInterval(load, 300_000);
-    return () => {
-      cancelled = true;
-      clearInterval(interval);
-      earthquakeRef.current.forEach(e => v.entities.remove(e));
-      earthquakeRef.current.clear();
-    };
-  }, [activeLayers.earthquakes]);
-
-  // ======= SHIPS (AISStream WebSocket) =======
-  useEffect(() => {
-    const v = viewerRef.current;
-    if (!v || !activeLayers.ships) {
-      shipRef.current.forEach(e => viewerRef.current?.entities.remove(e));
-      shipRef.current.clear();
-      onFeedCountUpdate('ships', 0);
-      return;
-    }
-
-    // Use a wide bounding box for initial connection
-    const rect = v.camera.computeViewRectangle();
-    const bounds = rect ? {
-      south: Math.max(-90, Cesium.Math.toDegrees(rect.south)),
-      west: Math.max(-180, Cesium.Math.toDegrees(rect.west)),
-      north: Math.min(90, Cesium.Math.toDegrees(rect.north)),
-      east: Math.min(180, Cesium.Math.toDegrees(rect.east)),
-    } : { south: -60, west: -180, north: 60, east: 180 };
-
-    const disconnect = connectShipFeed(bounds, (ships) => {
-      const currentIds = new Set<string>();
-
-      ships.forEach((ship, mmsi) => {
-        currentIds.add(mmsi);
-        const pos = Cesium.Cartesian3.fromDegrees(ship.longitude, ship.latitude, 0);
-        const existing = shipRef.current.get(mmsi);
-        const color = Cesium.Color.fromCssColorString(getShipColor(ship.shipType));
-
-        if (existing) {
-          existing.position = new Cesium.ConstantPositionProperty(pos);
-        } else {
-          const entity = v.entities.add({
-            position: pos,
-            point: {
-              pixelSize: 5,
-              color: color,
-              outlineColor: Cesium.Color.WHITE,
-              outlineWidth: 1,
-              distanceDisplayCondition: new Cesium.DistanceDisplayCondition(0, 5_000_000),
-            },
-            label: {
-              text: ship.name,
-              font: '9px Share Tech Mono',
-              fillColor: color,
-              pixelOffset: new Cesium.Cartesian2(8, 0),
-              distanceDisplayCondition: new Cesium.DistanceDisplayCondition(0, 500_000),
-              style: Cesium.LabelStyle.FILL,
-            },
-            properties: { feedType: 'ship', data: ship },
-          });
-          shipRef.current.set(mmsi, entity);
-        }
-      });
-
-      // Remove ships no longer in feed
-      for (const [id, e] of shipRef.current) {
-        if (!currentIds.has(id)) { v.entities.remove(e); shipRef.current.delete(id); }
-      }
-
-      onFeedCountUpdate('ships', currentIds.size);
-    });
-
-    return () => {
-      disconnect();
-      shipRef.current.forEach(e => v.entities.remove(e));
-      shipRef.current.clear();
-    };
-  }, [activeLayers.ships]);
-
-  // ======= CONFLICTS (GDELT) =======
-  useEffect(() => {
-    const v = viewerRef.current;
-    if (!v || !activeLayers.conflicts) {
-      conflictRef.current.forEach(e => viewerRef.current?.entities.remove(e));
-      conflictRef.current.clear();
-      if (!activeLayers.conflicts) onFeedCountUpdate('conflicts', 0);
-      return;
-    }
-
-    let cancelled = false;
-
-    const load = async () => {
-      try {
-        // Delay to avoid GDELT rate limits
-        await new Promise(r => setTimeout(r, 3000));
-        if (cancelled) return;
-        const events = await fetchConflicts();
-        if (cancelled) return;
-
-        for (const ev of events) {
-          if (isNaN(ev.latitude) || isNaN(ev.longitude)) continue;
-
-          const isBattle = ev.event_type.includes('Battle');
-          const isExplosion = ev.event_type.includes('Explosion') || ev.event_type.includes('Remote violence');
-          const isProtest = ev.event_type.includes('Protest');
-          const isRiot = ev.event_type.includes('Riot');
-
-          const color = isBattle || isExplosion ? Cesium.Color.RED
-            : isRiot ? Cesium.Color.ORANGE
-            : isProtest ? Cesium.Color.YELLOW
-            : Cesium.Color.fromCssColorString('#ff6666');
-
-          const size = 8;
-
-          const entity = v.entities.add({
-            position: Cesium.Cartesian3.fromDegrees(ev.longitude, ev.latitude, 0),
-            point: {
-              pixelSize: size,
-              color: Cesium.Color.fromAlpha(color, 0.8),
-              outlineColor: color,
-              outlineWidth: 2,
-            },
-            ellipse: {
-              semiMajorAxis: 30000,
-              semiMinorAxis: 30000,
-              material: Cesium.Color.fromAlpha(color, 0.15),
-              outline: true,
-              outlineColor: Cesium.Color.fromAlpha(color, 0.4),
-              height: 0,
-            },
-            label: {
-              text: `${isExplosion ? '💥' : isBattle ? '⚔' : isProtest ? '✊' : '⚠'} ${ev.event_type}`,
-              font: '9px Share Tech Mono',
-              fillColor: color,
-              pixelOffset: new Cesium.Cartesian2(size + 4, 0),
-              distanceDisplayCondition: new Cesium.DistanceDisplayCondition(0, 2_000_000),
-              style: Cesium.LabelStyle.FILL,
-            },
-            properties: { feedType: 'conflict', data: ev },
-          });
-          conflictRef.current.set(ev.id, entity);
-        }
-
-        onFeedCountUpdate('conflicts', events.length);
-      } catch (err) { console.error('Conflict error:', err); }
-    };
-
-    load();
-    return () => {
-      cancelled = true;
-      conflictRef.current.forEach(e => v.entities.remove(e));
-      conflictRef.current.clear();
-    };
-  }, [activeLayers.conflicts]);
-
-  // ======= FIRMS FIRE/THERMAL =======
-  useEffect(() => {
-    const v = viewerRef.current;
-    if (!v || !activeLayers.fires) {
-      fireRef.current.forEach(e => viewerRef.current?.entities.remove(e));
-      fireRef.current.clear();
-      if (!activeLayers.fires) onFeedCountUpdate('fires', 0);
-      return;
-    }
-
-    let cancelled = false;
-
-    const load = async () => {
-      try {
-        const hotspots = await fetchFIRMS();
-        if (cancelled) return;
-
-        for (let i = 0; i < hotspots.length; i++) {
-          const h = hotspots[i];
-          const color = h.confidence === 'high' ? Cesium.Color.RED
-            : h.confidence === 'nominal' ? Cesium.Color.ORANGE
-            : Cesium.Color.YELLOW;
-          const size = Math.max(4, Math.min(12, h.frp / 10));
-
-          const entity = v.entities.add({
-            position: Cesium.Cartesian3.fromDegrees(h.longitude, h.latitude, 0),
-            point: {
-              pixelSize: size,
-              color: color,
-              outlineColor: Cesium.Color.fromAlpha(Cesium.Color.RED, 0.5),
-              outlineWidth: 2,
-            },
-            label: {
-              text: `🔥 FRP:${h.frp.toFixed(0)}`,
-              font: '9px Share Tech Mono',
-              fillColor: Cesium.Color.ORANGE,
-              pixelOffset: new Cesium.Cartesian2(size + 4, 0),
-              distanceDisplayCondition: new Cesium.DistanceDisplayCondition(0, 1_000_000),
-              style: Cesium.LabelStyle.FILL,
-            },
-            properties: { feedType: 'fire', data: h },
-          });
-          fireRef.current.set(`fire-${i}`, entity);
-        }
-
-        onFeedCountUpdate('fires', hotspots.length);
-      } catch (err) { console.error('FIRMS error:', err); }
-    };
-
-    load();
-    return () => {
-      cancelled = true;
-      fireRef.current.forEach(e => v.entities.remove(e));
-      fireRef.current.clear();
-    };
-  }, [activeLayers.fires]);
-
-  // ======= TRAFFIC FLOW =======
-  useEffect(() => {
-    const v = viewerRef.current;
-    if (!v || !activeLayers.traffic) {
-      if (trafficPrimRef.current) { v?.scene.primitives.remove(trafficPrimRef.current); trafficPrimRef.current = null; }
-      if (trafficAnimRef.current) { cancelAnimationFrame(trafficAnimRef.current); trafficAnimRef.current = 0; }
-      return;
-    }
-
-    let cancelled = false;
-    let particles: { progress: number; speed: number; coords: [number, number][] }[] = [];
-    const pc = new Cesium.PointPrimitiveCollection();
-    v.scene.primitives.add(pc);
-    trafficPrimRef.current = pc;
-
-    const load = async () => {
-      try {
-        const rect = v.camera.computeViewRectangle();
-        if (!rect || v.camera.positionCartographic.height > 50_000) return;
-        const bounds = {
-          south: Cesium.Math.toDegrees(rect.south), west: Cesium.Math.toDegrees(rect.west),
-          north: Cesium.Math.toDegrees(rect.north), east: Cesium.Math.toDegrees(rect.east),
-        };
-        const roads = await fetchRoads(bounds);
-        if (cancelled) return;
-        particles = []; pc.removeAll();
-        for (const road of roads) {
-          if (road.coords.length < 2) continue;
-          const count = road.type === 'motorway' ? 8 : road.type === 'trunk' ? 5 : 3;
-          const speed = road.type === 'motorway' ? 0.003 : road.type === 'trunk' ? 0.002 : 0.001;
-          for (let i = 0; i < count; i++) {
-            const progress = Math.random();
-            const pos = interpolateRoad(road.coords, progress);
-            pc.add({
-              position: Cesium.Cartesian3.fromDegrees(pos[0], pos[1], 5), pixelSize: 3,
-              color: road.type === 'motorway' ? Cesium.Color.fromCssColorString('#00ff41') : Cesium.Color.YELLOW,
-            });
-            particles.push({ progress, speed, coords: road.coords });
-          }
-        }
-      } catch (e) { console.error('Traffic error:', e); }
-    };
-
-    load();
-
-    // Re-fetch when user zooms into city level
-    let debounceTimer: ReturnType<typeof setTimeout>;
-    const onCameraChange = () => {
-      clearTimeout(debounceTimer);
-      debounceTimer = setTimeout(() => {
-        if (!cancelled && v.camera.positionCartographic.height < 50_000 && particles.length === 0) {
-          load();
-        }
-      }, 1500);
-    };
-    v.camera.changed.addEventListener(onCameraChange);
-
-    const animate = () => {
-      if (cancelled) return;
-      for (let i = 0; i < particles.length; i++) {
-        particles[i].progress = (particles[i].progress + particles[i].speed) % 1;
-        const pos = interpolateRoad(particles[i].coords, particles[i].progress);
-        const pt = pc.get(i);
-        if (pt) pt.position = Cesium.Cartesian3.fromDegrees(pos[0], pos[1], 5);
-      }
-      trafficAnimRef.current = requestAnimationFrame(animate);
-    };
-    setTimeout(() => { if (!cancelled) animate(); }, 2000);
-
-    return () => {
-      cancelled = true;
-      clearTimeout(debounceTimer);
-      v.camera.changed.removeEventListener(onCameraChange);
-      if (trafficAnimRef.current) cancelAnimationFrame(trafficAnimRef.current);
-      if (trafficPrimRef.current) { v.scene.primitives.remove(trafficPrimRef.current); trafficPrimRef.current = null; }
-    };
-  }, [activeLayers.traffic]);
 
   // ======= GIBS LAYERS =======
   useEffect(() => {
@@ -805,18 +212,19 @@ export default function CesiumViewer({ onReady, shaderMode, activeLayers, onView
     }
   }, [activeLayers.gibs_viirs_nightlights, activeLayers.gibs_firms_fire, activeLayers.gibs_aerosol, activeLayers.gibs_sst]);
 
-  // ======= DETECTION OVERLAY DATA =======
+  // ======= DETECTION OVERLAY =======
   useEffect(() => {
     if (!activeLayers.boundingBoxes) { setDetectionEntities([]); return; }
 
     const interval = setInterval(() => {
       const entities: any[] = [];
+      const now = Cesium.JulianDate.now();
 
-      aircraftRef.current.forEach((e, id) => {
+      aircraftEntities.current.forEach((e, id) => {
         if (e.position) {
-          const pos = e.position.getValue(Cesium.JulianDate.now());
+          const pos = e.position.getValue(now);
           if (pos) {
-            const props = e.properties?.data?.getValue(Cesium.JulianDate.now());
+            const props = e.properties?.data?.getValue(now);
             entities.push({
               id: `ac-${id}`, type: 'aircraft',
               label: `${props?.callsign?.trim() || id} ALT:${(props?.baro_altitude || 0).toFixed(0)}m`,
@@ -826,18 +234,18 @@ export default function CesiumViewer({ onReady, shaderMode, activeLayers, onView
         }
       });
 
-      satelliteRef.current.forEach((e, name) => {
+      satelliteEntities.current.forEach((e, name) => {
         if (e.position) {
-          const pos = e.position.getValue(Cesium.JulianDate.now());
+          const pos = e.position.getValue(now);
           if (pos) entities.push({ id: `sat-${name}`, type: 'satellite', label: name, position: pos });
         }
       });
 
-      earthquakeRef.current.forEach((e, id) => {
+      earthquakeEntities.current.forEach((e, id) => {
         if (e.position) {
-          const pos = e.position.getValue(Cesium.JulianDate.now());
+          const pos = e.position.getValue(now);
           if (pos) {
-            const props = e.properties?.data?.getValue(Cesium.JulianDate.now());
+            const props = e.properties?.data?.getValue(now);
             entities.push({
               id: `eq-${id}`, type: 'earthquake',
               label: `M${props?.magnitude?.toFixed(1) || '?'}`,
@@ -883,26 +291,6 @@ export default function CesiumViewer({ onReady, shaderMode, activeLayers, onView
   );
 }
 
-function interpolateRoad(coords: [number, number][], t: number): [number, number] {
-  if (coords.length < 2) return coords[0];
-  const total = coords.length - 1;
-  const seg = Math.min(Math.floor(t * total), total - 1);
-  const frac = t * total - seg;
-  return [
-    coords[seg][0] + (coords[seg + 1][0] - coords[seg][0]) * frac,
-    coords[seg][1] + (coords[seg + 1][1] - coords[seg][1]) * frac,
-  ];
-}
-
-function createAircraftIcon(color: Cesium.Color): HTMLCanvasElement {
-  const c = document.createElement('canvas'); c.width = 16; c.height = 16;
-  const ctx = c.getContext('2d')!;
-  ctx.fillStyle = `rgba(${color.red*255},${color.green*255},${color.blue*255},1)`;
-  ctx.beginPath(); ctx.moveTo(8,0); ctx.lineTo(14,12); ctx.lineTo(8,9); ctx.lineTo(2,12); ctx.closePath(); ctx.fill();
-  return c;
-}
-
-// Auto-refreshing camera panel for JPEG feeds
 function CameraPanel({ camera, onClose }: { camera: Camera; onClose: () => void }) {
   const [imgSrc, setImgSrc] = useState(camera.url);
   const [error, setError] = useState(false);
@@ -910,19 +298,14 @@ function CameraPanel({ camera, onClose }: { camera: Camera; onClose: () => void 
   useEffect(() => {
     setImgSrc(`${camera.url}?t=${Date.now()}`);
     setError(false);
-    // Refresh every 5 seconds for JPEG feeds
-    const interval = setInterval(() => {
-      setImgSrc(`${camera.url}?t=${Date.now()}`);
-    }, 5000);
+    const interval = setInterval(() => { setImgSrc(`${camera.url}?t=${Date.now()}`); }, 5000);
     return () => clearInterval(interval);
   }, [camera.url]);
 
   return (
     <div className="video-panel">
       <div className="video-header">
-        <span style={{ color: 'var(--accent-green)', fontSize: 11 }}>
-          {camera.name} — {camera.city}
-        </span>
+        <span style={{ color: 'var(--accent-green)', fontSize: 11 }}>{camera.name} — {camera.city}</span>
         <button className="close-btn" onClick={onClose}>X</button>
       </div>
       {error ? (
@@ -930,33 +313,12 @@ function CameraPanel({ camera, onClose }: { camera: Camera; onClose: () => void 
           FEED UNAVAILABLE — CORS BLOCKED OR OFFLINE
         </div>
       ) : (
-        <img
-          src={imgSrc}
-          alt={camera.name}
-          style={{ width: '100%', display: 'block' }}
-          onError={() => setError(true)}
-        />
+        <img src={imgSrc} alt={camera.name} style={{ width: '100%', display: 'block' }} onError={() => setError(true)} />
       )}
-      <div style={{
-        padding: '4px 8px',
-        fontSize: 9,
-        color: 'var(--text-dim)',
-        borderTop: '1px solid var(--border)',
-        display: 'flex',
-        justifyContent: 'space-between',
-      }}>
+      <div style={{ padding: '4px 8px', fontSize: 9, color: 'var(--text-dim)', borderTop: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between' }}>
         <span>LIVE — REFRESH 5s</span>
         <span>{camera.type.toUpperCase()}</span>
       </div>
     </div>
   );
-}
-
-function createCameraIcon(): HTMLCanvasElement {
-  const c = document.createElement('canvas'); c.width = 20; c.height = 20;
-  const ctx = c.getContext('2d')!;
-  ctx.fillStyle = '#ff6b00'; ctx.fillRect(3,5,10,10);
-  ctx.beginPath(); ctx.moveTo(13,7); ctx.lineTo(18,4); ctx.lineTo(18,16); ctx.lineTo(13,13); ctx.closePath(); ctx.fill();
-  ctx.fillStyle = '#333'; ctx.beginPath(); ctx.arc(8,10,3,0,Math.PI*2); ctx.fill();
-  return c;
 }

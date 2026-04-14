@@ -451,3 +451,100 @@ html, body, #root {
 .cesium-viewer-bottom {
   display: none !important;
 }
+
+/* === Feed Status Bar === */
+.feed-status-bar {
+  margin-top: 16px;
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+
+.feed-status-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 8px;
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
+.feed-status-row:hover {
+  background: var(--bg-hover);
+}
+
+.feed-status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.feed-status-name {
+  flex: 1;
+  letter-spacing: 1px;
+}
+
+.feed-status-time {
+  color: var(--text-dim);
+  font-size: 9px;
+}
+
+/* === Toast Notifications === */
+.toast-container {
+  position: fixed;
+  top: 120px;
+  right: 16px;
+  z-index: 90;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  pointer-events: auto;
+}
+
+.toast {
+  background: rgba(17, 17, 17, 0.92);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent-green);
+  padding: 8px 12px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-primary);
+  cursor: pointer;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 240px;
+  max-width: 360px;
+  animation: toastSlideIn 0.3s ease;
+}
+
+.toast:hover {
+  background: rgba(26, 26, 26, 0.95);
+}
+
+.toast-error {
+  border-left-color: var(--accent-red);
+}
+
+.toast-warning {
+  border-left-color: var(--accent-amber);
+}
+
+.toast-info {
+  border-left-color: var(--accent-green);
+}
+
+.toast-msg {
+  flex: 1;
+}
+
+.toast-time {
+  color: var(--text-dim);
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+@keyframes toastSlideIn {
+  from { transform: translateX(100%); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}

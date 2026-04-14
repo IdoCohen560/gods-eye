@@ -11,7 +11,89 @@ export interface ConflictEvent {
   source: string;
 }
 
-// Known conflict zone coordinates for mapping GDELT articles to locations
+// ---------------------------------------------------------------------------
+// Event type classification from title text
+// ---------------------------------------------------------------------------
+
+function classifyEventType(title: string): string {
+  if (/bomb|explo|shell|missile|strike|attack/i.test(title)) return 'Explosion/Remote violence';
+  if (/protest|demonstrat|rally|march/i.test(title)) return 'Protests';
+  if (/riot|unrest|clash/i.test(title)) return 'Riots';
+  return 'Battles';
+}
+
+// ---------------------------------------------------------------------------
+// PRIMARY: GDELT GeoJSON API — returns real coordinates
+// ---------------------------------------------------------------------------
+
+interface GeoJSONFeature {
+  type: string;
+  geometry?: { type: string; coordinates?: number[] };
+  properties?: { name?: string; urlcount?: number; url?: string; html?: string };
+}
+
+interface GeoJSONResponse {
+  type: string;
+  features?: GeoJSONFeature[];
+}
+
+async function fetchGeoJSON(): Promise<ConflictEvent[] | null> {
+  try {
+    const res = await fetch('/.netlify/functions/acled-proxy?mode=geo');
+    if (!res.ok) return null;
+
+    const data: GeoJSONResponse = await res.json();
+
+    if (!data.features || !Array.isArray(data.features) || data.features.length === 0) {
+      return null;
+    }
+
+    const events: ConflictEvent[] = [];
+
+    for (const feature of data.features) {
+      const coords = feature.geometry?.coordinates;
+      if (!coords || coords.length < 2) continue;
+
+      const lon = coords[0];
+      const lat = coords[1];
+
+      // Sanity-check coordinates
+      if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+      if (lat < -90 || lat > 90 || lon < -180 || lon > 180) continue;
+
+      const name = feature.properties?.name || '';
+      const eventUrl = feature.properties?.url || '';
+
+      let source = '';
+      if (eventUrl) {
+        try { source = new URL(eventUrl).hostname; } catch { /* skip */ }
+      }
+
+      events.push({
+        id: eventUrl || `geo-${lat}-${lon}-${events.length}`,
+        event_type: classifyEventType(name),
+        title: name,
+        latitude: lat,
+        longitude: lon,
+        country: '',
+        location: name,
+        date: new Date().toISOString(),
+        url: eventUrl,
+        source,
+      });
+    }
+
+    return events.length > 0 ? events : null;
+  } catch (err) {
+    console.warn('GDELT GeoJSON fetch failed, will fall back to doc API:', err);
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// FALLBACK: GDELT Doc API + inferLocation (original approach)
+// ---------------------------------------------------------------------------
+
 const CONFLICT_ZONES: Record<string, { lat: number; lon: number }> = {
   'Ukraine': { lat: 48.3794, lon: 31.1656 },
   'Russia': { lat: 55.7558, lon: 37.6173 },
@@ -37,11 +119,9 @@ const CONFLICT_ZONES: Record<string, { lat: number; lon: number }> = {
 };
 
 function inferLocation(title: string, country: string): { lat: number; lon: number } | null {
-  // Check title and country against known conflict zones
   const text = `${title} ${country}`.toLowerCase();
   for (const [zone, coords] of Object.entries(CONFLICT_ZONES)) {
     if (text.includes(zone.toLowerCase())) {
-      // Add some randomness so dots don't stack
       return {
         lat: coords.lat + (Math.random() - 0.5) * 2,
         lon: coords.lon + (Math.random() - 0.5) * 2,
@@ -51,9 +131,9 @@ function inferLocation(title: string, country: string): { lat: number; lon: numb
   return null;
 }
 
-export async function fetchConflicts(): Promise<ConflictEvent[]> {
+async function fetchDocFallback(): Promise<ConflictEvent[]> {
   try {
-    const res = await fetch('/.netlify/functions/acled-proxy');
+    const res = await fetch('/.netlify/functions/acled-proxy?mode=doc');
     if (!res.ok) return [];
     const data = await res.json();
 
@@ -67,16 +147,9 @@ export async function fetchConflicts(): Promise<ConflictEvent[]> {
       const location = inferLocation(title, country);
       if (!location) continue;
 
-      const isExplosion = /bomb|explo|shell|missile|strike|attack/i.test(title);
-      const isProtest = /protest|demonstrat|rally|march/i.test(title);
-      const isRiot = /riot|unrest|clash/i.test(title);
-
       events.push({
         id: article.url || `${location.lat}-${location.lon}-${Date.now()}`,
-        event_type: isExplosion ? 'Explosion/Remote violence'
-          : isProtest ? 'Protests'
-          : isRiot ? 'Riots'
-          : 'Battles',
+        event_type: classifyEventType(title),
         title,
         latitude: location.lat,
         longitude: location.lon,
@@ -90,7 +163,18 @@ export async function fetchConflicts(): Promise<ConflictEvent[]> {
 
     return events;
   } catch (err) {
-    console.error('GDELT fetch error:', err);
+    console.error('GDELT doc fallback fetch error:', err);
     return [];
   }
+}
+
+// ---------------------------------------------------------------------------
+// Public entry point — tries GeoJSON first, falls back to doc API
+// ---------------------------------------------------------------------------
+
+export async function fetchConflicts(): Promise<ConflictEvent[]> {
+  const geoEvents = await fetchGeoJSON();
+  if (geoEvents) return geoEvents;
+
+  return fetchDocFallback();
 }

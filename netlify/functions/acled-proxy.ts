@@ -1,19 +1,34 @@
 import type { Handler } from '@netlify/functions';
 
-// Replaced ACLED (broken auth) with GDELT — free, no auth needed
-const GDELT_URL = 'https://api.gdeltproject.org/api/v2/doc/doc';
+const GDELT_GEO_URL = 'https://api.gdeltproject.org/api/v2/geo/geo';
+const GDELT_DOC_URL = 'https://api.gdeltproject.org/api/v2/doc/doc';
 
-const handler: Handler = async () => {
+const handler: Handler = async (event) => {
   try {
-    const params = new URLSearchParams({
-      query: 'conflict OR violence OR attack OR bombing OR shelling OR protest OR riot',
-      mode: 'artlist',
-      maxrecords: '250',
-      format: 'json',
-      sort: 'DateDesc',
-    });
+    const mode = event.queryStringParameters?.mode || 'geo';
 
-    const res = await fetch(`${GDELT_URL}?${params}`);
+    let url: string;
+
+    if (mode === 'geo') {
+      const params = new URLSearchParams({
+        query: 'conflict OR violence OR attack OR bombing',
+        format: 'GeoJSON',
+        timespan: '24h',
+        maxpoints: '500',
+      });
+      url = `${GDELT_GEO_URL}?${params}`;
+    } else {
+      const params = new URLSearchParams({
+        query: 'conflict OR violence OR attack OR bombing OR shelling OR protest OR riot',
+        mode: 'artlist',
+        maxrecords: '250',
+        format: 'json',
+        sort: 'DateDesc',
+      });
+      url = `${GDELT_DOC_URL}?${params}`;
+    }
+
+    const res = await fetch(url);
     const data = await res.text();
 
     return {

@@ -5,6 +5,7 @@ import HUD from './components/HUD';
 import ShaderSelector from './components/ShaderSelector';
 import CommandBar from './components/CommandBar';
 import BootSequence from './components/BootSequence';
+import ToastNotification from './components/ToastNotification';
 import type { Viewer } from 'cesium';
 
 export type ShaderMode = 'normal' | 'nvg' | 'flir' | 'crt' | 'cel' | 'classified' | 'bw' | 'surveillance';
@@ -70,6 +71,7 @@ export default function App() {
   return (
     <div className="app">
       <CommandBar viewer={viewer} />
+      <ToastNotification />
       <div className="main-container">
         <Sidebar activeLayers={activeLayers} toggleLayer={toggleLayer} />
         <div className="viewer-container">

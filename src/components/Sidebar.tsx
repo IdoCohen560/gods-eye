@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import FeedStatusBar from './FeedStatusBar';
 
 interface Props {
   activeLayers: Record<string, boolean>;
@@ -96,6 +97,8 @@ export default function Sidebar({ activeLayers, toggleLayer }: Props) {
         Click entity for details<br />
         Click camera for live feed
       </div>
+
+      <FeedStatusBar />
     </div>
   );
 }
